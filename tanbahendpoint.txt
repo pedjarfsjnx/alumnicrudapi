@@ -1,0 +1,155 @@
+SOAL
+
+YANG SOFT DELETE MASUK KE TRASH
+
+MEMBUAT:
+1.) ENDPOINT TRASH
+2.) ENDPOINT RESTORE
+3.) ENDPOINT HARD DELETE (HAPUS KE DATABASE)
+
+SETELAH SOFT DELETE MASUK KE TRASH, SETELAH TRASH DAN ADA TIMESTAMPNYA, 
+SETELAH ITU UNTUK RESTORE ADALAH MENGEMBALIKAN YANG ADA DI TRASH YAKNI MENGHAPUS TIMESTAMPNYA DAN TIDAK JADI KE TRASH,
+HARD DELETE YAKNI UNTUK MENGHAPUS PERMANEN YANG SUDAH ADA DI TRASH (HAPUS DI DATABASE).
+
+ADMIN BISA SOFT DELETE YANG MASUK KE TRASH, BISA RESTORE, BISA HARD DELETE SEMUANYA.
+USER BISA SOFT DELETE YANG MASUK KE TRASH, BISA RESTORE, BISA HARD DELETE USER IDNYA SAJA
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Checklist rapi membuat endpoint baru (end‑to‑end)
+
+1) Tentukan kontrak endpoint (sebelum menulis kode)
+- Tujuan: Soft delete riwayat pekerjaan
+- Method & Path: PATCH /alumni-crud-api/pekerjaan/:id/soft-delete
+- Auth: JWT wajib
+  - admin: boleh hapus pekerjaan siapa pun
+  - user: hanya boleh hapus pekerjaannya sendiri (berdasarkan alumni.user_id)
+- Response:
+  - 200: { success, message }
+  - 401: unauthorized
+  - 403: forbidden (bukan pemilik)
+  - 404: data tidak ditemukan
+  - 409: sudah dihapus
+  - 500: error server
+
+2) Urutan kerja (wajib diikuti)
+1. SQL migration di pgAdmin (JALANKAN DULU, baru ubah kode)
+   - Tambah kolom soft delete:
+     - ALTER TABLE pekerjaan_alumni
+       - ADD COLUMN IF NOT EXISTS is_deleted boolean NOT NULL DEFAULT false
+       - ADD COLUMN IF NOT EXISTS deleted_at timestamptz
+       - ADD COLUMN IF NOT EXISTS deleted_by int
+     - CREATE INDEX IF NOT EXISTS idx_pekerjaan_is_deleted ON pekerjaan_alumni(is_deleted);
+   - Siapkan relasi kepemilikan (jika perlu):
+     - ALTER TABLE alumni ADD COLUMN IF NOT EXISTS user_id int;
+     - (Opsional) FK ke users(id) bila data sudah siap.
+   - Verifikasi cepat:
+     - SELECT id, alumni_id, is_deleted FROM pekerjaan_alumni ORDER BY id DESC LIMIT 5;
+     - SELECT id, user_id FROM alumni ORDER BY id DESC LIMIT 5;
+
+2. Repository (app/repository/pekerjaan_repository.go)
+   - Tugas: akses DB + query SQL (tidak ada logika role di sini).
+   - Tambah fungsi:
+     - GetOwnerUserID(pekerjaanID):
+       - SELECT a.user_id
+         FROM pekerjaan_alumni pa JOIN alumni a ON a.id = pa.alumni_id
+         WHERE pa.id = $1;
+     - SoftDelete(pekerjaanID, deleterID):
+       - UPDATE pekerjaan_alumni
+         SET is_deleted = true, deleted_at = now(), deleted_by = $2
+         WHERE id = $1 AND is_deleted = false
+         RETURNING id;
+     - Pastikan list/count exclude is_deleted:
+       - ... WHERE pa.is_deleted = false ...
+
+3. Service (app/service/pekerjaan_service.go)
+   - Tugas: business logic + authorization.
+   - SoftDeletePekerjaan(id, requesterUserID, requesterRole):
+     - Jika role == "admin" → lanjut.
+     - Jika role == "user":
+       - ownerUserID := repo.GetOwnerUserID(id)
+       - Jika ownerUserID != requesterUserID → 403.
+     - affected := repo.SoftDelete(id, requesterUserID)
+     - Jika affected = 0 → 404 (tidak ada) atau 409 (sudah dihapus).
+     - Return sukses.
+
+4. Handler (app/handler/pekerjaan_handler.go)
+   - Tugas: ambil param, ambil claims dari JWT di context, panggil service, map error → status code.
+   - Langkah:
+     - Parse id dari :id.
+     - userID := c.GetInt("userID"), role := c.GetString("role").
+     - err := service.SoftDeletePekerjaan(id, userID, role)
+     - Switch error → 401/403/404/409/500; kalau nil → 200.
+
+5. Router (route/route.go)
+   - Daftarkan route dengan middleware auth:
+     - r := gin.Default()
+     - api := r.Group("/alumni-crud-api")
+     - pekerjaan := api.Group("/pekerjaan", middleware.JWTAuth())
+     - pekerjaan.PATCH("/:id/soft-delete", pekerjaanHandler.SoftDelete)
+
+6. Update endpoint GET/list yang sudah ada
+- Tambahkan filter pa.is_deleted = false pada semua query list/count/detail agar data terhapus tidak muncul.
+
+3) Query contoh siap tempel (pgAdmin)
+- Tambah kolom (migration):
+  - ALTER TABLE pekerjaan_alumni ADD COLUMN IF NOT EXISTS is_deleted boolean NOT NULL DEFAULT false;
+  - ALTER TABLE pekerjaan_alumni ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+  - ALTER TABLE pekerjaan_alumni ADD COLUMN IF NOT EXISTS deleted_by int;
+  - CREATE INDEX IF NOT EXISTS idx_pekerjaan_is_deleted ON pekerjaan_alumni(is_deleted);
+- Cek kepemilikan:
+  - SELECT pa.id, a.user_id FROM pekerjaan_alumni pa JOIN alumni a ON a.id = pa.alumni_id WHERE pa.id = $1;
+- Verifikasi sebelum/ sesudah soft delete:
+  - SELECT id, is_deleted, deleted_at, deleted_by FROM pekerjaan_alumni WHERE id = $1;
+
+4) Skenario uji di Postman (langkah ringkas)
+1. Login → dapatkan token
+   - POST /alumni-crud-api/auth/login
+   - Body JSON: { "username": "admin", "password": "password" } (atau user biasa)
+   - Simpan token → variable {{token}}
+2. Set Header
+   - Authorization: Bearer {{token}}
+3. Uji endpoint soft delete
+   - PATCH /alumni-crud-api/pekerjaan/123/soft-delete
+   - Expect:
+     - Admin → 200 di semua data valid
+     - User (pemilik) → 200
+     - User (bukan pemilik) → 403
+     - ID tidak ada / sudah dihapus → 404/409
+4. Verifikasi
+   - GET list pekerjaan → pastikan item yang dihapus tidak muncul
+   - pgAdmin: SELECT is_deleted FROM pekerjaan_alumni WHERE id = 123;
+
+5) Troubleshooting cepat
+- “column ... does not exist”
+  - Anda belum menjalankan migration. Jalankan SQL dulu, lalu restart app.
+- “unique constraint ...”
+  - Cek data duplikat sebelum menambah constraint/relasi. Bersihkan atau buat FK nanti.
+- “data null tapi total > 0”
+  - Pastikan handler tidak membungkus response dua kali; service mengisi Data []; repo benar‑benar mengembalikan rows.
+- Hasil 0 saat search
+  - Uji tanpa search; cek OFFSET (page, limit) benar; total sedikit tapi page besar → kosong itu wajar.
+
+Urutan singkat yang selalu sama
+- SQL migration (pgAdmin) → Repository → Service → Handler → Router → Test Postman → Verifikasi DB.
+
+Jika Anda ingin, saya bisa kirim skeleton minimal fungsi (signature) untuk repo/service/handler sesuai pola ini agar bisa copy‑paste saat ujian.
