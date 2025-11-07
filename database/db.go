@@ -1,37 +1,41 @@
 package database
 
 import (
-    "alumni-crud-api/config"
-    "database/sql"
-    "fmt"
-    "log"
+	"alumni-crud-api/config"
+	"context"
+	"fmt"
+	"log"
+	"time"
 
-    _ "github.com/lib/pq"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var DB *sql.DB
+// Kita tidak akan menyimpan variabel DB global,
+// kita akan mengembalikannya dan menginjeksikannya di main.go
+// var DB *mongo.Database
 
-func ConnectDB() {
-    cfg := config.LoadConfig()
-    
-    dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-        cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode)
+func ConnectMongo() *mongo.Database {
+	cfg := config.LoadConfig()
 
-    var err error
-    DB, err = sql.Open("postgres", dsn)
-    if err != nil {
-        log.Fatal("Failed to connect to database:", err)
-    }
+	clientOptions := options.Client().ApplyURI(cfg.MongoURI)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-    if err = DB.Ping(); err != nil {
-        log.Fatal("Failed to ping database:", err)
-    }
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		log.Fatalf("Koneksi ke MongoDB gagal: %v", err)
+	}
 
-    fmt.Println("Successfully connected to PostgreSQL database")
+	// Cek koneksi (Ping)
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		log.Fatalf("Ping ke MongoDB gagal: %v", err)
+	}
+
+	fmt.Println("Berhasil terhubung ke MongoDB!")
+	// Kembalikan database yang akan digunakan
+	return client.Database(cfg.DatabaseName)
 }
 
-func CloseDB() {
-    if DB != nil {
-        DB.Close()
-    }
-}
+// Hapus fungsi CloseDB() karena koneksi dikelola oleh driver.

@@ -2,50 +2,72 @@ package repository
 
 import (
 	"alumni-crud-api/app/model"
-	"alumni-crud-api/database"
+	"context"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
-type AuthRepository struct{}
-
-func NewAuthRepository() *AuthRepository {
-	return &AuthRepository{}
+// Definisikan Interface untuk Dependency Injection
+type AuthRepository interface {
+	GetUserByUsernameOrEmail(identifier string) (*model.User, string, error)
+	GetUserByID(id string) (*model.User, error)
 }
 
-func (r *AuthRepository) GetUserByUsernameOrEmail(identifier string) (*model.User, string, error) {
+type authRepository struct {
+	collection *mongo.Collection
+}
+
+func NewAuthRepository(db *mongo.Database) AuthRepository {
+	return &authRepository{
+		collection: db.Collection("users"),
+	}
+}
+
+func (r *authRepository) GetUserByUsernameOrEmail(identifier string) (*model.User, string, error) {
 	var user model.User
-	var passwordHash string
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	err := database.DB.QueryRow(`
-		SELECT id, username, email, password_hash, role, created_at, updated_at
-		FROM users 
-		WHERE username = $1 OR email = $1
-	`, identifier).Scan(
-		&user.ID, &user.Username, &user.Email, &passwordHash, &user.Role,
-		&user.CreatedAt, &user.UpdatedAt,
-	)
+	// Mencari berdasarkan username atau email
+	filter := bson.M{
+		"$or": []bson.M{
+			{"username": identifier},
+			{"email": identifier},
+		},
+	}
 
+	err := r.collection.FindOne(ctx, filter).Decode(&user)
 	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, "", err
+		}
 		return nil, "", err
 	}
 
-	return &user, passwordHash, nil
+	return &user, user.PasswordHash, nil
 }
 
-func (r *AuthRepository) GetUserByID(id int) (*model.User, error) {
+func (r *authRepository) GetUserByID(id string) (*model.User, error) {
 	var user model.User
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	err := database.DB.QueryRow(`
-		SELECT id, username, email, role, created_at, updated_at
-		FROM users 
-		WHERE id = $1
-	`, id).Scan(
-		&user.ID, &user.Username, &user.Email, &user.Role,
-		&user.CreatedAt, &user.UpdatedAt,
-	)
-
+	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		return nil, err
+		return nil, err // ID tidak valid
 	}
+
+	filter := bson.M{"_id": objID}
+	err = r.collection.FindOne(ctx, filter).Decode(&user)
+	if err != nil {
+		return nil, err // Termasuk mongo.ErrNoDocuments
+	}
+
+	// Hapus password hash untuk keamanan
+	user.PasswordHash = ""
 
 	return &user, nil
 }

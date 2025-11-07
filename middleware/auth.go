@@ -38,7 +38,7 @@ func AuthRequired() fiber.Handler {
 		}
 
 		// Store user info in context
-		c.Locals("user_id", claims.UserID)
+		c.Locals("user_id", claims.UserID) // Ini sekarang string
 		c.Locals("username", claims.Username)
 		c.Locals("role", claims.Role)
 

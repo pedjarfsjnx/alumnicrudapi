@@ -4,15 +4,17 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type User struct {
-	ID        int       `json:"id"`
-	Username  string    `json:"username"`
-	Email     string    `json:"email"`
-	Role      string    `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	Username     string             `bson:"username" json:"username"`
+	Email        string             `bson:"email" json:"email"`
+	PasswordHash string             `bson:"password_hash" json:"-"` // Jangan kirim hash ke client
+	Role         string             `bson:"role" json:"role"`
+	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt    time.Time          `bson:"updated_at" json:"updated_at"`
 }
 
 type LoginRequest struct {
@@ -26,7 +28,7 @@ type LoginResponse struct {
 }
 
 type JWTClaims struct {
-	UserID   int    `json:"user_id"`
+	UserID   string `json:"user_id"` // Kita gunakan string untuk ObjectID
 	Username string `json:"username"`
 	Role     string `json:"role"`
 	jwt.RegisteredClaims

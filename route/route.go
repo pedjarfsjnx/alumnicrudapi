@@ -2,42 +2,35 @@ package route
 
 import (
 	"alumni-crud-api/app/service"
+	_ "alumni-crud-api/docs" // Impor folder docs yang di-generate
 	"alumni-crud-api/middleware"
 
 	"github.com/gofiber/fiber/v2"
+
+	// INI YANG MEMPERBAIKI ERROR:
+	// Kita mengimpor paket dan memberinya nama alias "fiberSwagger"
+	fiberSwagger "github.com/swaggo/fiber-swagger"
 )
 
-func SetupRoutes(fiberApp *fiber.App, alumniService service.AlumniService, pekerjaanService service.PekerjaanService, authService *service.AuthService) {
+// Pastikan "fileService service.FileService" ada di sini
+func SetupRoutes(
+	fiberApp *fiber.App,
+	alumniService service.AlumniService,
+	pekerjaanService service.PekerjaanService,
+	authService *service.AuthService,
+	fileService service.FileService,
+) {
+
+	// TAMBAHKAN INI: Handler untuk Swagger UI
+	// Sekarang "fiberSwagger" sudah dikenali
+	fiberApp.Get("/swagger/*", fiberSwagger.WrapHandler)
+
+	// Endpoint publik (tidak berubah)
 	fiberApp.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"success": true,
-			"message": "Alumni CRUD API Server",
-			"version": "1.0.0",
-			"endpoints": fiber.Map{
-				"auth": fiber.Map{
-					"POST /alumni-crud-api/auth/login":  "Login to get access token",
-					"GET /alumni-crud-api/auth/profile": "Get user profile (requires auth)",
-				},
-				"alumni": fiber.Map{
-					"GET /alumni-crud-api/alumni":        "Get all alumni (requires auth)",
-					"GET /alumni-crud-api/alumni/:id":    "Get alumni by ID (requires auth)",
-					"POST /alumni-crud-api/alumni":       "Create new alumni (admin only)",
-					"PUT /alumni-crud-api/alumni/:id":    "Update alumni (admin only)",
-					"DELETE /alumni-crud-api/alumni/:id": "Delete alumni (admin only)",
-				},
-				"pekerjaan": fiber.Map{
-					"GET /alumni-crud-api/pekerjaan":                    "Get all pekerjaan (requires auth)",
-					"GET /alumni-crud-api/pekerjaan/:id":                "Get pekerjaan by ID (requires auth)",
-					"GET /alumni-crud-api/pekerjaan/alumni/:alumni_id":  "Get pekerjaan by alumni ID (admin only)",
-					"POST /alumni-crud-api/pekerjaan":                   "Create new pekerjaan (admin only)",
-					"PUT /alumni-crud-api/pekerjaan/:id":                "Update pekerjaan (admin only)",
-					"DELETE /alumni-crud-api/pekerjaan/:id":             "Delete pekerjaan (admin only)",
-					"PATCH /alumni-crud-api/pekerjaan/:id/soft-delete":  "Soft delete pekerjaan (admin or owner)",
-					"GET /alumni-crud-api/pekerjaan/trash":              "List trash (admin: all, user: own)",
-					"PATCH /alumni-crud-api/pekerjaan/:id/restore":      "Restore from trash (admin or owner)",
-					"DELETE /alumni-crud-api/pekerjaan/:id/hard-delete": "Hard delete from trash (admin or owner)",
-				},
-			},
+			"message": "Alumni CRUD API Server (MongoDB + File Upload)",
+			"version": "2.0.0",
 		})
 	})
 
@@ -49,14 +42,18 @@ func SetupRoutes(fiberApp *fiber.App, alumniService service.AlumniService, peker
 		})
 	})
 
+	// Grup API utama Anda
 	api := fiberApp.Group("/alumni-crud-api")
 
+	// Rute Autentikasi (tidak berubah)
 	auth := api.Group("/auth")
 	auth.Post("/login", authService.HandleLogin)
 
+	// Grup rute yang dilindungi (memerlukan token)
 	protected := api.Group("", middleware.AuthRequired())
 	protected.Get("/auth/profile", authService.HandleGetProfile)
 
+	// Rute Alumni (tidak berubah)
 	alumni := protected.Group("/alumni")
 	alumni.Get("/", alumniService.HandleGetAllAlumni)
 	alumni.Get("/:id", alumniService.HandleGetAlumniByID)
@@ -64,6 +61,7 @@ func SetupRoutes(fiberApp *fiber.App, alumniService service.AlumniService, peker
 	alumni.Put("/:id", middleware.AdminOnly(), alumniService.HandleUpdateAlumni)
 	alumni.Delete("/:id", middleware.AdminOnly(), alumniService.HandleDeleteAlumni)
 
+	// Rute Pekerjaan (tidak berubah)
 	pekerjaan := protected.Group("/pekerjaan")
 	pekerjaan.Get("/", pekerjaanService.HandleGetAllPekerjaan)
 	pekerjaan.Get("/:id", pekerjaanService.HandleGetPekerjaanByID)
@@ -75,4 +73,11 @@ func SetupRoutes(fiberApp *fiber.App, alumniService service.AlumniService, peker
 	pekerjaan.Get("/trash", pekerjaanService.HandleListTrash)
 	pekerjaan.Patch("/:id/restore", pekerjaanService.HandleRestorePekerjaan)
 	pekerjaan.Delete("/:id/hard-delete", pekerjaanService.HandleHardDeletePekerjaan)
+
+	// Rute File Upload (tidak berubah)
+	upload := protected.Group("/upload")
+	upload.Post("/foto", fileService.HandleUpload)
+	upload.Post("/sertifikat", fileService.HandleUpload)
+	upload.Get("/alumni/:alumni_id", fileService.HandleGetFilesByAlumni)
+	upload.Delete("/:id", fileService.HandleDeleteFile)
 }

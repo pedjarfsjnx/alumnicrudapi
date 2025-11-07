@@ -11,7 +11,7 @@ var jwtSecret = []byte("your-secret-key-min-32-characters-long-alumni-crud-api-2
 
 func GenerateToken(user model.User) (string, error) {
 	claims := model.JWTClaims{
-		UserID:   user.ID,
+		UserID:   user.ID.Hex(), // Ubah ObjectID ke string
 		Username: user.Username,
 		Role:     user.Role,
 		RegisteredClaims: jwt.RegisteredClaims{

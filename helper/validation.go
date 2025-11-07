@@ -36,10 +36,16 @@ func ValidateCreateAlumni(nim, nama, jurusan, email string, angkatan, tahunLulus
 	return nil
 }
 
-func ValidateCreatePekerjaan(alumniID int, namaPerusahaan, posisiJabatan, bidangIndustri, lokasiKerja, tanggalMulaiKerja, statusPekerjaan string) error {
+// --- FUNGSI YANG DIPERBAIKI ADA DI BAWAH INI ---
+
+func ValidateCreatePekerjaan(
+	alumniID string, // <-- Diubah dari int ke string
+	namaPerusahaan, posisiJabatan, bidangIndustri, lokasiKerja, tanggalMulaiKerja, statusPekerjaan string,
+) error {
 	var errors []string
 
-	if alumniID <= 0 {
+	// Diubah dari <= 0 menjadi pengecekan string kosong
+	if alumniID == "" {
 		errors = append(errors, "Alumni ID is required")
 	}
 	if namaPerusahaan == "" {

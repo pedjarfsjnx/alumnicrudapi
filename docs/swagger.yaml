@@ -1,0 +1,19 @@
+basePath: /alumni-crud-api
+host: localhost:3000
+info:
+  contact: {}
+  description: |-
+    API untuk mengelola data alumni, pekerjaan, dan file upload.
+    Ini adalah proyek praktikum Pemrograman Backend Lanjut.
+  title: Alumni CRUD API
+  version: "1.0"
+paths: {}
+schemes:
+- http
+securityDefinitions:
+  ApiKeyAuth:
+    description: '"Format: Bearer {token}"'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

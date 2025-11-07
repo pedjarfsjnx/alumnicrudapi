@@ -2,218 +2,237 @@ package repository
 
 import (
 	"alumni-crud-api/app/model"
-	"alumni-crud-api/database"
-	"database/sql"
+	"context"
 	"fmt"
 	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type AlumniRepository interface {
 	GetAll() ([]model.Alumni, error)
-	GetByID(id int) (*model.Alumni, error)
-	Create(alumni *model.CreateAlumniRequest) (*model.Alumni, error)
-	Update(id int, alumni *model.UpdateAlumniRequest) (*model.Alumni, error)
-	Delete(id int) error
+	GetByID(id string) (*model.Alumni, error)
+	GetByUserID(userID string) (*model.Alumni, error) // Penting untuk otorisasi
+	Create(alumni *model.CreateAlumniRequest, userID primitive.ObjectID) (*model.Alumni, error)
+	Update(id string, alumni *model.UpdateAlumniRequest) (*model.Alumni, error)
+	Delete(id string) error
 	GetAllWithPagination(search, sortBy, order string, limit, offset int) ([]model.Alumni, error)
 	CountWithSearch(search string) (int, error)
 }
 
-type alumniRepository struct{}
+type alumniRepository struct {
+	collection *mongo.Collection
+}
 
-func NewAlumniRepository() AlumniRepository {
-	return &alumniRepository{}
+func NewAlumniRepository(db *mongo.Database) AlumniRepository {
+	return &alumniRepository{
+		collection: db.Collection("alumni"),
+	}
 }
 
 func (r *alumniRepository) GetAll() ([]model.Alumni, error) {
-	query := `
-        SELECT id, nim, nama, jurusan, angkatan, tahun_lulus, email, no_telepon, alamat, created_at, updated_at
-        FROM alumni
-        ORDER BY created_at DESC
-    `
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	rows, err := database.DB.Query(query)
+	var alumni []model.Alumni
+	opts := options.Find().SetSort(bson.D{{"created_at", -1}})
+	cursor, err := r.collection.Find(ctx, bson.M{}, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cursor.Close(ctx)
 
-	var alumni []model.Alumni
-	for rows.Next() {
-		var a model.Alumni
-		err := rows.Scan(
-			&a.ID, &a.NIM, &a.Nama, &a.Jurusan, &a.Angkatan, &a.TahunLulus,
-			&a.Email, &a.NoTelepon, &a.Alamat, &a.CreatedAt, &a.UpdatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		alumni = append(alumni, a)
+	if err = cursor.All(ctx, &alumni); err != nil {
+		return nil, err
 	}
-
 	return alumni, nil
 }
 
-func (r *alumniRepository) GetByID(id int) (*model.Alumni, error) {
-	query := `
-        SELECT id, nim, nama, jurusan, angkatan, tahun_lulus, email, no_telepon, alamat, created_at, updated_at
-        FROM alumni
-        WHERE id = $1
-    `
+func (r *alumniRepository) GetByID(id string) (*model.Alumni, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	var a model.Alumni
-	err := database.DB.QueryRow(query, id).Scan(
-		&a.ID, &a.NIM, &a.Nama, &a.Jurusan, &a.Angkatan, &a.TahunLulus,
-		&a.Email, &a.NoTelepon, &a.Alamat, &a.CreatedAt, &a.UpdatedAt,
-	)
+	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ID tidak valid: %v", err)
 	}
 
+	var a model.Alumni
+	if err := r.collection.FindOne(ctx, bson.M{"_id": objID}).Decode(&a); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, fmt.Errorf("alumni tidak ditemukan")
+		}
+		return nil, err
+	}
 	return &a, nil
 }
 
-func (r *alumniRepository) Create(req *model.CreateAlumniRequest) (*model.Alumni, error) {
-	query := `
-        INSERT INTO alumni (nim, nama, jurusan, angkatan, tahun_lulus, email, no_telepon, alamat, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING id, nim, nama, jurusan, angkatan, tahun_lulus, email, no_telepon, alamat, created_at, updated_at
-    `
+func (r *alumniRepository) GetByUserID(userID string) (*model.Alumni, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	userObjID, err := primitive.ObjectIDFromHex(userID)
+	if err != nil {
+		return nil, fmt.Errorf("ID user tidak valid: %v", err)
+	}
+
+	var a model.Alumni
+	if err := r.collection.FindOne(ctx, bson.M{"user_id": userObjID}).Decode(&a); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, fmt.Errorf("alumni tidak ditemukan")
+		}
+		return nil, err
+	}
+	return &a, nil
+}
+
+func (r *alumniRepository) Create(req *model.CreateAlumniRequest, userID primitive.ObjectID) (*model.Alumni, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	now := time.Now()
-	var a model.Alumni
-	err := database.DB.QueryRow(
-		query, req.NIM, req.Nama, req.Jurusan, req.Angkatan, req.TahunLulus,
-		req.Email, req.NoTelepon, req.Alamat, now, now,
-	).Scan(
-		&a.ID, &a.NIM, &a.Nama, &a.Jurusan, &a.Angkatan, &a.TahunLulus,
-		&a.Email, &a.NoTelepon, &a.Alamat, &a.CreatedAt, &a.UpdatedAt,
-	)
+	newAlumni := model.Alumni{
+		UserID:     userID, // Diambil dari service
+		NIM:        req.NIM,
+		Nama:       req.Nama,
+		Jurusan:    req.Jurusan,
+		Angkatan:   req.Angkatan,
+		TahunLulus: req.TahunLulus,
+		Email:      req.Email,
+		NoTelepon:  req.NoTelepon,
+		Alamat:     req.Alamat,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	result, err := r.collection.InsertOne(ctx, newAlumni)
 	if err != nil {
 		return nil, err
 	}
 
-	return &a, nil
+	newAlumni.ID = result.InsertedID.(primitive.ObjectID)
+	return &newAlumni, nil
 }
 
-func (r *alumniRepository) Update(id int, req *model.UpdateAlumniRequest) (*model.Alumni, error) {
-	query := `
-        UPDATE alumni 
-        SET nama = $1, jurusan = $2, angkatan = $3, tahun_lulus = $4, email = $5, no_telepon = $6, alamat = $7, updated_at = $8
-        WHERE id = $9
-        RETURNING id, nim, nama, jurusan, angkatan, tahun_lulus, email, no_telepon, alamat, created_at, updated_at
-    `
+func (r *alumniRepository) Update(id string, req *model.UpdateAlumniRequest) (*model.Alumni, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	now := time.Now()
-	var a model.Alumni
-	err := database.DB.QueryRow(
-		query, req.Nama, req.Jurusan, req.Angkatan, req.TahunLulus,
-		req.Email, req.NoTelepon, req.Alamat, now, id,
-	).Scan(
-		&a.ID, &a.NIM, &a.Nama, &a.Jurusan, &a.Angkatan, &a.TahunLulus,
-		&a.Email, &a.NoTelepon, &a.Alamat, &a.CreatedAt, &a.UpdatedAt,
-	)
+	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
+		return nil, fmt.Errorf("ID tidak valid: %v", err)
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"nama":        req.Nama,
+			"jurusan":     req.Jurusan,
+			"angkatan":    req.Angkatan,
+			"tahun_lulus": req.TahunLulus,
+			"email":       req.Email,
+			"no_telepon":  req.NoTelepon,
+			"alamat":      req.Alamat,
+			"updated_at":  time.Now(),
+		},
+	}
+
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var updatedAlumni model.Alumni
+	err = r.collection.FindOneAndUpdate(ctx, bson.M{"_id": objID}, update, opts).Decode(&updatedAlumni)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, fmt.Errorf("alumni tidak ditemukan")
+		}
 		return nil, err
 	}
 
-	return &a, nil
+	return &updatedAlumni, nil
 }
 
-func (r *alumniRepository) Delete(id int) error {
-	query := "DELETE FROM alumni WHERE id = $1"
-	result, err := database.DB.Exec(query, id)
+func (r *alumniRepository) Delete(id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	objID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return fmt.Errorf("ID tidak valid: %v", err)
+	}
+
+	result, err := r.collection.DeleteOne(ctx, bson.M{"_id": objID})
 	if err != nil {
 		return err
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if rowsAffected == 0 {
-		return nil // No rows affected, but not an error
+	if result.DeletedCount == 0 {
+		return fmt.Errorf("alumni tidak ditemukan")
 	}
 
 	return nil
 }
 
+func (r *alumniRepository) buildSearchFilter(search string) bson.M {
+	if search == "" {
+		return bson.M{}
+	}
+	searchRegex := bson.M{"$regex": search, "$options": "i"}
+	return bson.M{
+		"$or": []bson.M{
+			{"nama": searchRegex},
+			{"nim": searchRegex},
+			{"jurusan": searchRegex},
+			{"email": searchRegex},
+		},
+	}
+}
+
 func (r *alumniRepository) GetAllWithPagination(search, sortBy, order string, limit, offset int) ([]model.Alumni, error) {
-	fmt.Printf("[DEBUG] Alumni repo GetAllWithPagination - search: '%s', sortBy: %s, order: %s, limit: %d, offset: %d\n",
-		search, sortBy, order, limit, offset)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	// Validate sortBy to prevent SQL injection
-	validSortColumns := map[string]bool{
-		"id": true, "nim": true, "nama": true, "jurusan": true,
-		"angkatan": true, "tahun_lulus": true, "email": true, "created_at": true,
-	}
+	filter := r.buildSearchFilter(search)
+
+	validSortColumns := map[string]bool{"id": true, "nim": true, "nama": true, "jurusan": true, "angkatan": true, "tahun_lulus": true, "email": true, "created_at": true}
 	if !validSortColumns[sortBy] {
-		sortBy = "id"
+		sortBy = "created_at"
+	}
+	if sortBy == "id" {
+		sortBy = "_id"
 	}
 
-	// Validate order
-	if order != "desc" {
-		order = "asc"
+	sortOrder := 1 // asc
+	if order == "desc" {
+		sortOrder = -1 // desc
 	}
 
-	query := fmt.Sprintf(`
-        SELECT id, nim, nama, jurusan, angkatan, tahun_lulus, email, no_telepon, alamat, created_at, updated_at
-        FROM alumni
-        WHERE (nama ILIKE $1 OR nim ILIKE $1 OR jurusan ILIKE $1 OR email ILIKE $1)
-        ORDER BY %s %s
-        LIMIT $2 OFFSET $3
-    `, sortBy, order)
-
-	searchParam := "%" + search + "%"
-	fmt.Printf("[DEBUG] Alumni SQL query: %s\n", query)
-	fmt.Printf("[DEBUG] Alumni SQL params: search='%s', limit=%d, offset=%d\n", searchParam, limit, offset)
-
-	rows, err := database.DB.Query(query, searchParam, limit, offset)
-	if err != nil {
-		fmt.Printf("[ERROR] Alumni query error: %v\n", err)
-		return nil, err
-	}
-	defer rows.Close()
+	opts := options.Find().
+		SetSort(bson.D{{sortBy, sortOrder}}).
+		SetLimit(int64(limit)).
+		SetSkip(int64(offset))
 
 	var alumni []model.Alumni
-	for rows.Next() {
-		var a model.Alumni
-		err := rows.Scan(
-			&a.ID, &a.NIM, &a.Nama, &a.Jurusan, &a.Angkatan, &a.TahunLulus,
-			&a.Email, &a.NoTelepon, &a.Alamat, &a.CreatedAt, &a.UpdatedAt,
-		)
-		if err != nil {
-			fmt.Printf("[ERROR] Alumni scan error: %v\n", err)
-			return nil, err
-		}
-		alumni = append(alumni, a)
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
 	}
+	defer cursor.Close(ctx)
 
-	fmt.Printf("[DEBUG] Alumni repo found %d records\n", len(alumni))
-	if len(alumni) > 0 {
-		fmt.Printf("[DEBUG] First alumni record: %+v\n", alumni[0])
+	if err = cursor.All(ctx, &alumni); err != nil {
+		return nil, err
 	}
-
 	return alumni, nil
 }
 
 func (r *alumniRepository) CountWithSearch(search string) (int, error) {
-	searchParam := "%" + search + "%"
-	fmt.Printf("[DEBUG] Alumni count query with search: '%s'\n", searchParam)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	var total int
-	countQuery := `
-        SELECT COUNT(*) 
-        FROM alumni 
-        WHERE (nama ILIKE $1 OR nim ILIKE $1 OR jurusan ILIKE $1 OR email ILIKE $1)
-    `
-	err := database.DB.QueryRow(countQuery, searchParam).Scan(&total)
-	if err != nil && err != sql.ErrNoRows {
-		fmt.Printf("[ERROR] Alumni count error: %v\n", err)
+	filter := r.buildSearchFilter(search)
+	count, err := r.collection.CountDocuments(ctx, filter)
+	if err != nil {
 		return 0, err
 	}
-
-	fmt.Printf("[DEBUG] Alumni total count: %d\n", total)
-
-	return total, nil
+	return int(count), nil
 }

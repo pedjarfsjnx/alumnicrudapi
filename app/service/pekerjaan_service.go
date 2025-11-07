@@ -4,25 +4,27 @@ import (
 	"alumni-crud-api/app/model"
 	"alumni-crud-api/app/repository"
 	"alumni-crud-api/helper"
-	"database/sql"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type PekerjaanService interface {
 	GetAllPekerjaan() ([]model.PekerjaanAlumni, error)
-	GetPekerjaanByID(id int) (*model.PekerjaanAlumni, error)
-	GetPekerjaanByAlumniID(alumniID int) ([]model.PekerjaanAlumni, error)
+	GetPekerjaanByID(id string) (*model.PekerjaanAlumni, error)
+	GetPekerjaanByAlumniID(alumniID string) ([]model.PekerjaanAlumni, error)
 	CreatePekerjaan(req *model.CreatePekerjaanRequest) (*model.PekerjaanAlumni, error)
-	UpdatePekerjaan(id int, req *model.UpdatePekerjaanRequest) (*model.PekerjaanAlumni, error)
-	DeletePekerjaan(id int) error
+	UpdatePekerjaan(id string, req *model.UpdatePekerjaanRequest) (*model.PekerjaanAlumni, error)
+	DeletePekerjaan(id string) error // Ini adalah hard delete (admin only)
 	GetPekerjaanWithPagination(search, sortBy, order string, page, limit int) (*model.PekerjaanResponse, error)
-	SoftDeletePekerjaan(id int, userID int, role string) error
-	ListTrash(search string, page, limit int, userID int, role string) ([]model.PekerjaanAlumni, error)
-	RestorePekerjaan(id int, userID int, role string) error
-	HardDeletePekerjaan(id int, userID int, role string) error
+	SoftDeletePekerjaan(id string, userID string, role string) error
+	ListTrash(search string, page, limit int, userID string, role string) ([]model.PekerjaanAlumni, error)
+	RestorePekerjaan(id string, userID string, role string) error
+	HardDeletePekerjaan(id string, userID string, role string) error
 
 	HandleGetAllPekerjaan(c *fiber.Ctx) error
 	HandleGetPekerjaanByID(c *fiber.Ctx) error
@@ -52,10 +54,10 @@ func (s *pekerjaanService) GetAllPekerjaan() ([]model.PekerjaanAlumni, error) {
 	return s.pekerjaanRepo.GetAll()
 }
 
-func (s *pekerjaanService) GetPekerjaanByID(id int) (*model.PekerjaanAlumni, error) {
+func (s *pekerjaanService) GetPekerjaanByID(id string) (*model.PekerjaanAlumni, error) {
 	pekerjaan, err := s.pekerjaanRepo.GetByID(id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == mongo.ErrNoDocuments || err.Error() == "pekerjaan tidak ditemukan" {
 			return nil, errors.New("pekerjaan not found")
 		}
 		return nil, err
@@ -63,11 +65,11 @@ func (s *pekerjaanService) GetPekerjaanByID(id int) (*model.PekerjaanAlumni, err
 	return pekerjaan, nil
 }
 
-func (s *pekerjaanService) GetPekerjaanByAlumniID(alumniID int) ([]model.PekerjaanAlumni, error) {
+func (s *pekerjaanService) GetPekerjaanByAlumniID(alumniID string) ([]model.PekerjaanAlumni, error) {
 	// Check if alumni exists
 	_, err := s.alumniRepo.GetByID(alumniID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == mongo.ErrNoDocuments || err.Error() == "alumni tidak ditemukan" {
 			return nil, errors.New("alumni not found")
 		}
 		return nil, err
@@ -80,7 +82,7 @@ func (s *pekerjaanService) CreatePekerjaan(req *model.CreatePekerjaanRequest) (*
 	// Check if alumni exists
 	_, err := s.alumniRepo.GetByID(req.AlumniID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == mongo.ErrNoDocuments || err.Error() == "alumni tidak ditemukan" {
 			return nil, errors.New("alumni not found")
 		}
 		return nil, err
@@ -94,14 +96,11 @@ func (s *pekerjaanService) CreatePekerjaan(req *model.CreatePekerjaanRequest) (*
 	return s.pekerjaanRepo.Create(req)
 }
 
-func (s *pekerjaanService) UpdatePekerjaan(id int, req *model.UpdatePekerjaanRequest) (*model.PekerjaanAlumni, error) {
+func (s *pekerjaanService) UpdatePekerjaan(id string, req *model.UpdatePekerjaanRequest) (*model.PekerjaanAlumni, error) {
 	// Check if pekerjaan exists
 	_, err := s.pekerjaanRepo.GetByID(id)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, errors.New("pekerjaan not found")
-		}
-		return nil, err
+		return nil, errors.New("pekerjaan not found")
 	}
 
 	if err := helper.ValidateUpdatePekerjaan(req.NamaPerusahaan, req.PosisiJabatan, req.BidangIndustri, req.LokasiKerja, req.TanggalMulaiKerja, req.StatusPekerjaan); err != nil {
@@ -111,47 +110,38 @@ func (s *pekerjaanService) UpdatePekerjaan(id int, req *model.UpdatePekerjaanReq
 	return s.pekerjaanRepo.Update(id, req)
 }
 
-func (s *pekerjaanService) DeletePekerjaan(id int) error {
+func (s *pekerjaanService) DeletePekerjaan(id string) error {
 	// Check if pekerjaan exists
 	_, err := s.pekerjaanRepo.GetByID(id)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return errors.New("pekerjaan not found")
-		}
-		return err
+		return errors.New("pekerjaan not found")
 	}
-
+	// Ini adalah hard delete, hanya untuk admin
 	return s.pekerjaanRepo.Delete(id)
 }
 
-func (s *pekerjaanService) SoftDeletePekerjaan(id int, userID int, role string) error {
-	// Check if pekerjaan exists
-	_, err := s.pekerjaanRepo.GetByID(id)
+func (s *pekerjaanService) SoftDeletePekerjaan(id string, userID string, role string) error {
+	deleterObjID, err := primitive.ObjectIDFromHex(userID)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return errors.New("pekerjaan not found")
-		}
-		return err
+		return errors.New("user ID tidak valid")
 	}
 
-	// Authorization check
-	if role != "admin" {
-		// Regular user can only delete their own pekerjaan
-		ownerUserID, err := s.pekerjaanRepo.GetOwnerUserID(id)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return errors.New("pekerjaan not found or no owner")
-			}
-			return err
-		}
+	pekerjaan, err := s.pekerjaanRepo.GetByID(id)
+	if err != nil {
+		return errors.New("pekerjaan not found")
+	}
 
-		if ownerUserID != userID {
+	if role != "admin" {
+		alumni, err := s.alumniRepo.GetByUserID(userID)
+		if err != nil {
+			return errors.New("profil alumni tidak ditemukan untuk user ini")
+		}
+		if pekerjaan.AlumniID != alumni.ID {
 			return errors.New("access denied: you can only delete your own pekerjaan")
 		}
 	}
-	// Admin can delete any pekerjaan, so no additional check needed
 
-	return s.pekerjaanRepo.SoftDelete(id, userID)
+	return s.pekerjaanRepo.SoftDelete(id, deleterObjID)
 }
 
 func (s *pekerjaanService) GetPekerjaanWithPagination(search, sortBy, order string, page, limit int) (*model.PekerjaanResponse, error) {
@@ -168,6 +158,9 @@ func (s *pekerjaanService) GetPekerjaanWithPagination(search, sortBy, order stri
 	}
 
 	pages := (total + limit - 1) / limit
+	if total == 0 {
+		pages = 0
+	}
 
 	response := &model.PekerjaanResponse{
 		Data: pekerjaan,
@@ -185,7 +178,7 @@ func (s *pekerjaanService) GetPekerjaanWithPagination(search, sortBy, order stri
 	return response, nil
 }
 
-func (s *pekerjaanService) ListTrash(search string, page, limit int, userID int, role string) ([]model.PekerjaanAlumni, error) {
+func (s *pekerjaanService) ListTrash(search string, page, limit int, userID string, role string) ([]model.PekerjaanAlumni, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -197,39 +190,68 @@ func (s *pekerjaanService) ListTrash(search string, page, limit int, userID int,
 	if role == "admin" {
 		return s.pekerjaanRepo.ListTrashAdmin(search, limit, offset)
 	}
-	return s.pekerjaanRepo.ListTrashUser(userID, search, limit, offset)
+
+	alumni, err := s.alumniRepo.GetByUserID(userID)
+	if err != nil {
+		return []model.PekerjaanAlumni{}, nil // Kembalikan trash kosong
+	}
+	return s.pekerjaanRepo.ListTrashUser(alumni.ID, search, limit, offset)
 }
 
-func (s *pekerjaanService) RestorePekerjaan(id int, userID int, role string) error {
-	// check ownership for non-admin
+func (s *pekerjaanService) RestorePekerjaan(id string, userID string, role string) error {
+	pekerjaan, err := s.pekerjaanRepo.GetByIDWithDeleted(id)
+	if err != nil {
+		return errors.New("pekerjaan not found")
+	}
+
+	if !pekerjaan.IsDeleted {
+		return errors.New("pekerjaan not found in trash")
+	}
+
 	if role != "admin" {
-		ownerID, err := s.pekerjaanRepo.GetOwnerUserID(id)
+		alumni, err := s.alumniRepo.GetByUserID(userID)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return errors.New("pekerjaan not found")
-			}
-			return err
+			return errors.New("profil alumni tidak ditemukan untuk user ini")
 		}
-		if ownerID != userID {
+		if pekerjaan.AlumniID != alumni.ID {
 			return errors.New("access denied: you can only restore your own pekerjaan")
 		}
 	}
 	return s.pekerjaanRepo.Restore(id)
 }
 
-func (s *pekerjaanService) HardDeletePekerjaan(id int, userID int, role string) error {
+func (s *pekerjaanService) HardDeletePekerjaan(id string, userID string, role string) error {
+	pekerjaan, err := s.pekerjaanRepo.GetByIDWithDeleted(id)
+	if err != nil {
+		return errors.New("pekerjaan not found")
+	}
+
+	if !pekerjaan.IsDeleted {
+		return errors.New("pekerjaan not found in trash")
+	}
+
 	if role == "admin" {
 		return s.pekerjaanRepo.HardDeleteAdmin(id)
 	}
-	// user only own
-	return s.pekerjaanRepo.HardDeleteUser(id, userID)
+
+	alumni, err := s.alumniRepo.GetByUserID(userID)
+	if err != nil {
+		return errors.New("profil alumni tidak ditemukan untuk user ini")
+	}
+	if pekerjaan.AlumniID != alumni.ID {
+		return errors.New("access denied: you can only delete your own pekerjaan")
+	}
+
+	return s.pekerjaanRepo.HardDeleteUser(id, alumni.ID)
 }
+
+// --- Handlers ---
 
 func (s *pekerjaanService) HandleGetAllPekerjaan(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "10"))
-	sortBy := c.Query("sortBy", "id")
-	order := c.Query("order", "asc")
+	sortBy := c.Query("sortBy", "created_at")
+	order := c.Query("order", "desc")
 	search := c.Query("search", "")
 
 	if page < 1 {
@@ -242,7 +264,7 @@ func (s *pekerjaanService) HandleGetAllPekerjaan(c *fiber.Ctx) error {
 	if c.Query("page") != "" || c.Query("limit") != "" || c.Query("search") != "" || c.Query("sortBy") != "" {
 		response, err := s.GetPekerjaanWithPagination(search, sortBy, order, page, limit)
 		if err != nil {
-			return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get pekerjaan data")
+			return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal mengambil data pekerjaan")
 		}
 		return c.JSON(fiber.Map{
 			"success": true,
@@ -254,40 +276,32 @@ func (s *pekerjaanService) HandleGetAllPekerjaan(c *fiber.Ctx) error {
 
 	pekerjaan, err := s.GetAllPekerjaan()
 	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get pekerjaan data")
+		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal mengambil data pekerjaan")
 	}
 	return helper.SuccessResponse(c, "Pekerjaan data retrieved successfully", pekerjaan)
 }
 
 func (s *pekerjaanService) HandleGetPekerjaanByID(c *fiber.Ctx) error {
-	id, err := strconv.Atoi(c.Params("id"))
-	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid ID parameter")
-	}
-
+	id := c.Params("id")
 	pekerjaan, err := s.GetPekerjaanByID(id)
 	if err != nil {
 		if err.Error() == "pekerjaan not found" {
 			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found")
 		}
-		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get pekerjaan data")
+		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal mengambil data pekerjaan")
 	}
 
 	return helper.SuccessResponse(c, "Pekerjaan data retrieved successfully", pekerjaan)
 }
 
 func (s *pekerjaanService) HandleGetPekerjaanByAlumniID(c *fiber.Ctx) error {
-	alumniID, err := strconv.Atoi(c.Params("alumni_id"))
-	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid alumni ID parameter")
-	}
-
+	alumniID := c.Params("alumni_id")
 	pekerjaan, err := s.GetPekerjaanByAlumniID(alumniID)
 	if err != nil {
 		if err.Error() == "alumni not found" {
 			return helper.ErrorResponse(c, fiber.StatusNotFound, "Alumni not found")
 		}
-		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get pekerjaan data")
+		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal mengambil data pekerjaan")
 	}
 
 	return helper.SuccessResponse(c, "Pekerjaan data retrieved successfully", pekerjaan)
@@ -311,11 +325,7 @@ func (s *pekerjaanService) HandleCreatePekerjaan(c *fiber.Ctx) error {
 }
 
 func (s *pekerjaanService) HandleUpdatePekerjaan(c *fiber.Ctx) error {
-	id, err := strconv.Atoi(c.Params("id"))
-	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid ID parameter")
-	}
-
+	id := c.Params("id")
 	var req model.UpdatePekerjaanRequest
 	if err := c.BodyParser(&req); err != nil {
 		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid request body")
@@ -333,40 +343,32 @@ func (s *pekerjaanService) HandleUpdatePekerjaan(c *fiber.Ctx) error {
 }
 
 func (s *pekerjaanService) HandleDeletePekerjaan(c *fiber.Ctx) error {
-	id, err := strconv.Atoi(c.Params("id"))
-	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid ID parameter")
-	}
-
-	err = s.DeletePekerjaan(id)
+	id := c.Params("id")
+	err := s.DeletePekerjaan(id)
 	if err != nil {
 		if err.Error() == "pekerjaan not found" {
 			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found")
 		}
-		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to delete pekerjaan")
+		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal menghapus pekerjaan")
 	}
 
 	return helper.SuccessResponse(c, "Pekerjaan deleted successfully", nil)
 }
 
 func (s *pekerjaanService) HandleSoftDeletePekerjaan(c *fiber.Ctx) error {
-	userID := c.Locals("user_id").(int)
+	userID := c.Locals("user_id").(string)
 	role := c.Locals("role").(string)
+	id := c.Params("id")
 
-	id, err := strconv.Atoi(c.Params("id"))
-	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid ID parameter")
-	}
-
-	err = s.SoftDeletePekerjaan(id, userID, role)
+	err := s.SoftDeletePekerjaan(id, userID, role)
 	if err != nil {
 		if err.Error() == "pekerjaan not found" {
 			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found")
 		}
-		if err.Error() == "access denied: you can only delete your own pekerjaan" {
-			return helper.ErrorResponse(c, fiber.StatusForbidden, "Access denied: you can only delete your own pekerjaan")
+		if strings.Contains(err.Error(), "access denied") {
+			return helper.ErrorResponse(c, fiber.StatusForbidden, err.Error())
 		}
-		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to delete pekerjaan")
+		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal menghapus pekerjaan: "+err.Error())
 	}
 
 	return helper.SuccessResponse(c, "Pekerjaan soft deleted successfully", nil)
@@ -374,7 +376,7 @@ func (s *pekerjaanService) HandleSoftDeletePekerjaan(c *fiber.Ctx) error {
 
 func (s *pekerjaanService) HandleListTrash(c *fiber.Ctx) error {
 	role := c.Locals("role").(string)
-	userID := c.Locals("user_id").(int)
+	userID := c.Locals("user_id").(string)
 
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "10"))
@@ -382,7 +384,7 @@ func (s *pekerjaanService) HandleListTrash(c *fiber.Ctx) error {
 
 	list, err := s.ListTrash(search, page, limit, userID, role)
 	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to get trash data")
+		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal mengambil data trash")
 	}
 
 	return c.JSON(fiber.Map{
@@ -394,20 +396,19 @@ func (s *pekerjaanService) HandleListTrash(c *fiber.Ctx) error {
 
 func (s *pekerjaanService) HandleRestorePekerjaan(c *fiber.Ctx) error {
 	role := c.Locals("role").(string)
-	userID := c.Locals("user_id").(int)
-	id, err := strconv.Atoi(c.Params("id"))
-	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid ID parameter")
-	}
+	userID := c.Locals("user_id").(string)
+	id := c.Params("id")
 
 	if err := s.RestorePekerjaan(id, userID, role); err != nil {
 		switch err.Error() {
 		case "pekerjaan not found":
+			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found")
+		case "pekerjaan not found in trash":
 			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found in trash")
 		case "access denied: you can only restore your own pekerjaan":
 			return helper.ErrorResponse(c, fiber.StatusForbidden, "Access denied: you can only restore your own pekerjaan")
 		default:
-			return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to restore pekerjaan")
+			return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal restore pekerjaan: "+err.Error())
 		}
 	}
 
@@ -416,17 +417,20 @@ func (s *pekerjaanService) HandleRestorePekerjaan(c *fiber.Ctx) error {
 
 func (s *pekerjaanService) HandleHardDeletePekerjaan(c *fiber.Ctx) error {
 	role := c.Locals("role").(string)
-	userID := c.Locals("user_id").(int)
-	id, err := strconv.Atoi(c.Params("id"))
-	if err != nil {
-		return helper.ErrorResponse(c, fiber.StatusBadRequest, "Invalid ID parameter")
-	}
+	userID := c.Locals("user_id").(string)
+	id := c.Params("id")
 
 	if err := s.HardDeletePekerjaan(id, userID, role); err != nil {
-		if err == sql.ErrNoRows {
-			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found in trash or access denied")
+		switch err.Error() {
+		case "pekerjaan not found":
+			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found")
+		case "pekerjaan not found in trash":
+			return helper.ErrorResponse(c, fiber.StatusNotFound, "Pekerjaan not found in trash")
+		case "access denied: you can only delete your own pekerjaan":
+			return helper.ErrorResponse(c, fiber.StatusForbidden, "Access denied: you can only delete your own pekerjaan")
+		default:
+			return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Gagal hard delete pekerjaan: "+err.Error())
 		}
-		return helper.ErrorResponse(c, fiber.StatusInternalServerError, "Failed to hard delete pekerjaan")
 	}
 
 	return helper.SuccessResponse(c, "Pekerjaan permanently deleted", nil)

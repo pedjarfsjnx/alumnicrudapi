@@ -1,0 +1,23 @@
+{
+    "schemes": [
+        "http"
+    ],
+    "swagger": "2.0",
+    "info": {
+        "description": "API untuk mengelola data alumni, pekerjaan, dan file upload.\nIni adalah proyek praktikum Pemrograman Backend Lanjut.",
+        "title": "Alumni CRUD API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:3000",
+    "basePath": "/alumni-crud-api",
+    "paths": {},
+    "securityDefinitions": {
+        "ApiKeyAuth": {
+            "description": "\"Format: Bearer {token}\"",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}
